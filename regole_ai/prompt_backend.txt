@@ -1,0 +1,89 @@
+RUOLO
+Sei uno sviluppatore backend senior. Devi realizzare un server HTTP (API REST) che genera documenti commerciali italiani in PDF: FATTURE (copia di cortesia), BOLLE DI ACCOMPAGNAMENTO e DDT (documenti di trasporto). Lavora su un database MySQL/MariaDB già esistente, il cui dump è nel file gestione_documenti_dump.sql (caricalo come primo passo e usalo come fonte di verità per lo schema).
+
+1. OBIETTIVO
+Il server deve permettere di:
+- gestire anagrafiche (azienda emittente, clienti, articoli);
+- creare e consultare fatture, bolle e DDT con le loro righe;
+- calcolare automaticamente numerazione, scadenze, imponibili, IVA e totali;
+- generare il PDF di ogni documento con impaginazione professionale, fedele ai fogli Excel originali (Fattura elettronica, Bolla di accompagnamento, Documento di trasporto).
+
+2. STACK (modificabile solo se motivato)
+- Python 3.12, FastAPI, Uvicorn
+- SQLAlchemy 2.x + PyMySQL (o mysqlclient); nessuna migrazione che alteri lo schema esistente
+- Pydantic v2 per validazione e serializzazione
+- Jinja2 + WeasyPrint per il PDF (template HTML/CSS in formato A4)
+- pytest + httpx per i test
+- Docker e docker-compose (servizi: api + mariadb che carica il dump all'avvio)
+- Configurazione tramite variabili d'ambiente (.env.example incluso)
+
+3. SCHEMA DATABASE (già esistente, NON modificarlo)
+Database: gestione_documenti. Tabelle:
+- Decodifiche: unita_misura, tipo_documento_sdi, aliquota_iva (aliquota in percentuale, es. 22.00), modalita_pagamento, causale_trasporto, trasporto_a_cura, porto, regime_fiscale, natura_iva.
+- Anagrafiche: azienda (mittente/cedente), cliente (ragione_sociale univoca, indirizzo_consegna facoltativo, codice_sdi default '0000000'), articolo (codice PK, tipo BENE/SERVIZIO, um, prezzo_unitario, aliquota_iva).
+- fattura: testata. Colonne GENERATE (sola lettura, mai in INSERT/UPDATE): numero (formato "2026/001"), data_scadenza (= data_emissione + giorni_pagamento). Chiave univoca (azienda_id, anno, progressivo).
+- fattura_riga: colonne GENERATE imponibile e importo_iva (sola lettura). Formule: imponibile = ROUND(quantita * prezzo * (1 - sconto/100), 2); iva = ROUND(imponibile * aliquota / 100, 2).
+- documento_trasporto: una sola tabella per DDT e BOLLA, distinti dalla colonna tipo ('DDT','BOLLA'). Colonna GENERATA numero ("DDT 001/2026" oppure "BA 001/2026"). Collegata opzionalmente a fattura tramite fattura_id (una fattura può avere più DDT).
+- documento_trasporto_riga: righe con articolo_codice, descrizione, um, quantita, note_lotto.
+- Viste utili da riusare: v_destinatario (scheda cliente con luogo_consegna_merce già risolto), v_fattura_riepilogo_iva, v_fattura_totali (totali e riferimento DDT), v_documento_trasporto.
+Le colonne generate vanno solo lette: dopo l'INSERT rileggi la riga per ottenere i valori calcolati.
+
+4. API DA REALIZZARE (prefisso /api/v1, risposte JSON, documentazione OpenAPI automatica)
+Anagrafiche (CRUD completo):
+- /clienti (ricerca per ragione_sociale con parametro q, anche parziale), /articoli, /azienda (singola riga), e GET in sola lettura per tutte le tabelle di decodifica.
+Fatture:
+- POST /fatture: crea testata + righe in un'unica transazione. Il progressivo è assegnato dal server (MAX+1 per azienda e anno, con SELECT ... FOR UPDATE o lock equivalente per evitare duplicati in concorrenza). Se una riga indica articolo_codice, descrizione, um, prezzo e aliquota possono essere precompilati dall'articolo ma restano sovrascrivibili.
+- GET /fatture (filtri: anno, cliente_id, da/a data; paginazione), GET /fatture/{id} (testata, righe, riepilogo IVA, totali, DDT collegati).
+- PUT /fatture/{id}, DELETE /fatture/{id}. Le righe sono sostituite in blocco.
+- GET /fatture/{id}/pdf: restituisce il PDF (Content-Type application/pdf).
+Bolle e DDT:
+- POST /documenti-trasporto con campo tipo ('DDT' o 'BOLLA'), stessa logica di numerazione (progressivo separato per tipo e anno).
+- GET (lista con filtri e dettaglio), PUT, DELETE come sopra.
+- GET /documenti-trasporto/{id}/pdf.
+- POST /documenti-trasporto/{id}/collega-fattura/{fattura_id} per collegare un DDT/bolla a una fattura.
+Utilità:
+- POST /documenti-trasporto/da-fattura/{fattura_id}: genera una bozza di bolla/DDT copiando le righe di bene dalla fattura (esclusi gli articoli di tipo SERVIZIO).
+- GET /health.
+
+5. REGOLE DI BUSINESS E VALIDAZIONI
+- Quantità > 0; sconto tra 0 e 100; aliquota presente in aliquota_iva; um presente in unita_misura.
+- Se una fattura contiene righe con aliquota 0%, natura_iva è obbligatoria; se non ci sono righe a 0%, natura_iva deve essere nulla.
+- Bollo virtuale: ammesso solo 0 o 2,00. Se esistono importi non soggetti a IVA (aliquota 0%) con totale superiore a 77,47 €, il bollo da 2,00 è obbligatorio, altrimenti dà errore di validazione. Il bollo si somma al totale documento.
+- Totale documento = somma imponibili + somma IVA + bollo. Il riepilogo IVA è raggruppato per aliquota.
+- Partita IVA di 11 cifre; codice SDI di 7 caratteri; provincia di 2 lettere maiuscole.
+- Il luogo di destinazione di bolla/DDT, se non indicato, è l'indirizzo_consegna del cliente, altrimenti la sua sede (stessa logica di v_destinatario).
+- Date in formato ISO nelle API, in formato gg/mm/aaaa nei PDF. Importi nei PDF con virgola decimale e separatore delle migliaia (es. 1.234,56 €), percentuali IVA senza decimali inutili.
+- Errori in formato JSON coerente (codice HTTP corretto, messaggio in italiano, dettaglio del campo).
+
+6. LAYOUT DEI PDF (template Jinja2 in /templates, CSS in un file separato)
+Fattura (copia di cortesia):
+- intestazione "FATTURA" e, in evidenza, il tipo documento SdI (es. "TD01 - Fattura");
+- due blocchi affiancati CEDENTE/PRESTATORE (ragione sociale, indirizzo, P.IVA, C.F., regime fiscale) e CESSIONARIO/COMMITTENTE (ragione sociale, indirizzo, P.IVA, C.F., codice destinatario SDI, PEC);
+- dati documento: numero, data emissione, scadenza, giorni di pagamento, modalità di pagamento, natura IVA se presente, riferimento DDT;
+- tabella righe: codice, descrizione, UM, quantità, prezzo unitario, sconto %, aliquota IVA, imponibile, importo IVA;
+- riepilogo IVA per aliquota (solo aliquote usate) e totali, con bollo e TOTALE DOCUMENTO;
+- IBAN, scadenza e note/causale;
+- nota a piè di pagina: "Copia di cortesia: non valida ai fini fiscali. L'originale è il file XML trasmesso al Sistema di Interscambio (SdI)." Il bollo da 2,00 € va menzionato solo se applicato.
+Bolla e DDT:
+- titolo "BOLLA DI ACCOMPAGNAMENTO" oppure "DOCUMENTO DI TRASPORTO (DDT)"; per il DDT cita il D.P.R. 472/1996 e la dicitura "da emettere in duplice copia";
+- blocchi MITTENTE (con telefono ed email) e DESTINATARIO (con email), luogo di destinazione;
+- dati del trasporto: numero, data, causale, trasporto a cura, porto, data e ora di inizio trasporto, aspetto esteriore dei beni, numero colli, peso lordo, vettore, riferimento fattura;
+- tabella righe: codice, descrizione dei beni, UM, quantità, note/lotto (nessun prezzo);
+- annotazioni e tre caselle firma: conducente, destinatario, mittente.
+Requisiti comuni: A4 verticale, intestazione ripetuta e numerazione pagine se il documento supera una pagina, tabelle che non spezzano le righe, caratteri leggibili, font incorporati.
+
+7. STRUTTURA DEL PROGETTO
+app/ (main.py, config.py, db.py, models/, schemas/, routers/, services/ con numerazione, calcoli e pdf, templates/, static/), tests/, docker/, docker-compose.yml, requirements.txt, .env.example, README.md.
+Separa router, logica di servizio e accesso ai dati. Nessuna logica di calcolo duplicata nei template: i totali vengono dal database o dal servizio di calcolo.
+
+8. SICUREZZA E QUALITÀ
+- Autenticazione con API key nell'header X-API-Key (valore da variabile d'ambiente) su tutti gli endpoint tranne /health.
+- Query solo parametrizzate (nessuna concatenazione SQL); escape automatico nei template.
+- Logging strutturato; nessuna credenziale nel codice.
+- Test automatici: (a) creazione della fattura di esempio con 2 righe (20 pz × 8,50 € senza sconto; 3 h × 60,00 € con sconto 10%; IVA 22%) che deve risultare imponibile 332,00, IVA 73,04, totale 405,04 e scadenza a 30 giorni; (b) numerazione progressiva senza duplicati con richieste concorrenti; (c) validazione natura IVA e bollo; (d) generazione PDF con risposta 200 e intestazione %PDF; (e) creazione di DDT e bolla con numeri "DDT 001/2026" e "BA 001/2026" e collegamento alla fattura.
+
+9. FASE OPZIONALE (implementala solo dopo che tutto il resto funziona)
+Endpoint GET /fatture/{id}/xml che genera il file FatturaPA (XML, versione 1.2.x) con i dati della fattura, usando i codici già presenti nel database (TipoDocumento, RegimeFiscale, ModalitaPagamento, Natura, CodiceDestinatario, PECDestinatario). Il file va validato contro lo schema XSD ufficiale e il nome deve seguire la convenzione dell'SdI.
+
+10. CONSEGNA
+Procedi per passi: (1) analisi dello schema e piano del lavoro, (2) scaffolding e connessione al database, (3) anagrafiche, (4) fatture con calcoli, (5) bolle e DDT, (6) PDF, (7) test, (8) README con istruzioni di avvio (docker compose up), esempi curl per ogni endpoint e descrizione di come modificare i template. Alla fine esegui i test e riporta il risultato. Se qualche requisito è ambiguo, scegli la soluzione più semplice, annota l'assunzione nel README e prosegui.

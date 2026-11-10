@@ -1,0 +1,130 @@
+RUOLOS
+Sei uno sviluppatore front end senior. Devi realizzare il client web (single page application) di un gestionale per la generazione di FATTURE, BOLLE DI ACCOMPAGNAMENTO e DDT (documenti di trasporto). Il back end esiste già: è un'API REST (prefisso /api/v1, JSON, documentazione OpenAPI su /docs, autenticazione con header X-API-Key). Non devi scrivere codice server.
+
+REGOLA FONDAMENTALE SULL'ESTETICA
+Non devo ricevere un design già deciso: l'aspetto grafico lo sceglierò io. Quindi:
+- NON scegliere palette, font, icone, ombre, raggi dei bordi, animazioni o un look "personale".
+- Costruisci componenti con markup semantico e accessibile e uno stile minimo, neutro e funzionale (solo layout, spaziature di base e stati di focus/errore leggibili).
+- Tutte le scelte visive devono passare da design token (variabili CSS) concentrati in un solo file `theme.css`: colori (sfondo, testo, primario, secondario, bordo, errore, successo, avviso), famiglie di font e dimensioni, spaziature, raggi, ombre, larghezza massima dei contenuti. I valori di partenza sono grigi/neutri e potranno essere sostituiti senza toccare i componenti.
+- Supporta tema chiaro/scuro tramite lo stesso file di token (attributo data-theme sull'elemento radice), senza decidere i colori.
+- Nessuna libreria di UI con look predefinito (no Material, Bootstrap, ecc.). Se serve, usa componenti "headless" (es. Radix, Headless UI, React Aria) oppure elementi HTML nativi.
+- Documenta nel README quali token esistono e dove cambiarli.
+
+1. STACK (modificabile solo se motivato)
+- React 18 + TypeScript + Vite
+- React Router per la navigazione
+- TanStack Query per le chiamate e la cache
+- React Hook Form + Zod per i form e la validazione
+- Un client HTTP tipizzato generato dall'OpenAPI del server (es. openapi-typescript); in assenza, definisci i tipi a mano coerenti con le schede qui sotto
+- Vitest + Testing Library per i test; Playwright per 2-3 test end to end
+- Configurazione tramite variabili d'ambiente (VITE_API_BASE_URL, VITE_API_KEY) con .env.example
+- Interfaccia in italiano, con tutti i testi in un file di traduzioni (i18n) per poterli modificare
+
+2. SCHEMA DEI DATI (come li espone l'API)
+- Cliente: id, ragione_sociale (univoca), partita_iva (11 cifre, opzionale), codice_fiscale, indirizzo, cap (5), citta, provincia (2 lettere), codice_sdi (7 caratteri, default "0000000"), pec, email, telefono, indirizzo_consegna (opzionale: se vuoto vale la sede).
+- Azienda (emittente, una sola): ragione_sociale, partita_iva, codice_fiscale, indirizzo, cap, citta, provincia, regime_fiscale, iban, telefono, email_pec.
+- Articolo: codice (chiave), descrizione, tipo (BENE | SERVIZIO), um, prezzo_unitario, aliquota_iva, attivo.
+- Fattura: id, cliente_id, anno, progressivo, numero (calcolato dal server, es. "2026/001"), tipo_documento, data_emissione, giorni_pagamento, data_scadenza (calcolata), modalita_pagamento, natura_iva, iban, note_causale, bollo_virtuale (0 o 2,00), righe[].
+- Riga fattura: n_riga, articolo_codice, descrizione, um, quantita, prezzo_unitario, sconto_percentuale, aliquota_iva, imponibile (calcolato), importo_iva (calcolato).
+- Documento di trasporto (DDT o BOLLA): id, tipo, cliente_id, anno, progressivo, numero (calcolato: "DDT 001/2026" o "BA 001/2026"), data_documento, luogo_destinazione, causale_id, trasporto_a_cura_id, porto_id, inizio_trasporto (data e ora), aspetto_esteriore, numero_colli, peso_lordo_kg, vettore, fattura_id, annotazioni, righe[].
+- Riga trasporto: n_riga, articolo_codice, descrizione, um, quantita, note_lotto.
+- Decodifiche (sola lettura, da caricare una volta e mettere in cache): unita_misura, tipo_documento_sdi, aliquota_iva, modalita_pagamento, causale_trasporto, trasporto_a_cura, porto, regime_fiscale, natura_iva.
+I campi "calcolati dal server" non si inviano mai nelle richieste di salvataggio; dopo ogni salvataggio si rilegge il documento.
+
+3. PAGINE E NAVIGAZIONE
+Struttura con navigazione principale (barra laterale o superiore, a scelta del layout neutro) con queste voci:
+- Dashboard
+- Fatture
+- Bolle e DDT
+- Clienti
+- Articoli
+- Impostazioni (dati azienda e liste)
+
+3.1 Dashboard
+- Contatori: fatture dell'anno, totale fatturato dell'anno, DDT/bolle dell'anno, fatture con scadenza nei prossimi 30 giorni.
+- Elenco "ultimi documenti" (fatture e trasporti misti, con link).
+- Scorciatoie: "Nuova fattura", "Nuova bolla", "Nuovo DDT", "Nuovo cliente".
+
+3.2 Elenco fatture
+- Tabella con: numero, data emissione, cliente, imponibile, IVA, totale, scadenza, modalità di pagamento, DDT collegati.
+- Filtri: anno, cliente (con ricerca), intervallo di date, ricerca testuale sul numero; ordinamento per colonna; paginazione.
+- Azioni per riga: apri, modifica, scarica PDF, duplica, elimina (con conferma).
+- Pulsante "Nuova fattura".
+
+3.3 Editor fattura (creazione e modifica)
+Sezione "Destinatario":
+- Campo di ricerca/selezione del cliente (autocompletamento sul server con parametro q, ricerca anche parziale sulla ragione sociale). Dopo la scelta mostra una scheda di sola lettura con ragione sociale, P.IVA, C.F., indirizzo completo, codice SDI, PEC, email e luogo di consegna merce. Link "modifica cliente" e "crea nuovo cliente" (anche in finestra/pannello senza perdere il lavoro).
+- Indicazione chiara di "cliente non trovato" e dell'esito della ricerca.
+Sezione "Dati documento":
+- Tipo documento (menu da tipo_documento_sdi, default TD01), data emissione (default oggi), giorni di pagamento (default 30), data di scadenza mostrata come anteprima calcolata, modalità di pagamento, natura IVA (visibile e obbligatoria solo se esiste almeno una riga con aliquota 0%, altrimenti nascosta/azzerata), IBAN (precompilato dall'azienda), riferimento DDT (elenco dei DDT collegati, con possibilità di collegarne altri dello stesso cliente), note/causale.
+- Il numero fattura è assegnato dal server: nel form nuovo mostra "verrà assegnato al salvataggio".
+Sezione "Righe":
+- Tabella editabile con aggiunta, eliminazione, duplicazione e riordino delle righe (anche da tastiera). Colonne: articolo (ricerca per codice o descrizione con autocompletamento), descrizione, UM (menu), quantità, prezzo unitario, sconto %, aliquota IVA (menu), imponibile e IVA di riga (sola lettura, calcolati lato client in anteprima con la stessa formula del server).
+- Scegliendo un articolo, precompila descrizione, UM, prezzo e aliquota, che restano modificabili.
+- Almeno una riga è obbligatoria.
+Sezione "Totali":
+- Riepilogo IVA per aliquota (solo aliquote usate: imponibile e imposta), totale imponibile, totale IVA, bollo virtuale, TOTALE DOCUMENTO.
+- Bollo virtuale: gestisci i valori 0 e 2,00. Se esistono importi con aliquota 0% e il loro totale supera 77,47 €, avvisa e proponi di impostare 2,00; il server può comunque rifiutare, quindi mostra l'errore ricevuto.
+Azioni: Salva (bozza), Salva e scarica PDF, Anteprima PDF (apertura in pannello o nuova scheda), Annulla. Avvisa se si esce con modifiche non salvate.
+
+3.4 Elenco Bolle e DDT
+- Schede o filtro per tipo (Tutti / Bolla / DDT), tabella con: numero, tipo, data, destinatario, causale, colli, peso, fattura collegata.
+- Filtri: anno, tipo, cliente, date; ordinamento; paginazione.
+- Azioni per riga: apri, modifica, PDF, collega a fattura, duplica, elimina.
+- Pulsanti "Nuova bolla" e "Nuovo DDT".
+
+3.5 Editor bolla / DDT
+- Selettore tipo (BOLLA o DDT) e numero assegnato dal server.
+- Destinatario: stessa ricerca cliente della fattura; luogo di destinazione precompilato (indirizzo di consegna se presente, altrimenti sede) e modificabile.
+- Dati del trasporto: data documento, causale (menu), trasporto a cura (menu), porto (menu), data e ora di inizio trasporto, aspetto esteriore dei beni, numero colli, peso lordo (kg), vettore (testo libero), fattura collegata (ricerca tra le fatture del cliente), annotazioni.
+- Righe: codice articolo (ricerca), descrizione, UM, quantità, note/lotto. Nessun prezzo.
+- Azione "Crea da fattura": partendo da una fattura, genera una bozza di trasporto con le righe di tipo BENE (esclude i servizi), da rivedere prima del salvataggio.
+- Azioni: Salva, Salva e scarica PDF, Anteprima PDF, Annulla.
+
+3.6 Clienti
+- Elenco con ricerca, ordinamento e paginazione. Form di creazione/modifica con tutti i campi, validazioni (P.IVA di 11 cifre, CAP di 5 cifre, provincia di 2 lettere maiuscole, codice SDI di 7 caratteri) e segnalazione di ragione sociale già esistente.
+- Scheda cliente con storico dei suoi documenti (fatture e trasporti) e link rapidi.
+- Importazione da CSV (opzionale, vedi sezione 7).
+
+3.7 Articoli
+- Elenco con ricerca per codice o descrizione, filtro per tipo (BENE/SERVIZIO) e per attivo/non attivo. Form con codice, descrizione, tipo, UM, prezzo unitario, aliquota IVA, attivo. Il codice non è modificabile dopo la creazione.
+
+3.8 Impostazioni
+- Dati azienda emittente (modulo singolo, con regime fiscale da menu e IBAN).
+- Consultazione delle liste di decodifica in sola lettura (unità di misura, aliquote, ecc.).
+- Impostazioni locali del client: URL dell'API, chiave API (salvata in modo sicuro lato client), tema chiaro/scuro.
+
+4. COMPORTAMENTI TRASVERSALI
+- Importi in euro con virgola decimale e separatore delle migliaia (1.234,56 €); date in formato gg/mm/aaaa; nelle richieste all'API date ISO. Usa Intl con locale it-IT.
+- Validazione in tempo reale con messaggi in italiano sotto ogni campo; gli errori del server (formato JSON con campo e messaggio) vengono associati al campo corrispondente oppure mostrati in un riepilogo in cima al form.
+- Stati di caricamento, vuoto ed errore per ogni elenco e per ogni chiamata; riprova in caso di errore di rete.
+- Conferma prima di ogni eliminazione; segnalazione chiara di successo dopo ogni salvataggio (notifica non invasiva).
+- Download PDF: richiesta con la chiave API, salvataggio con nome file significativo (es. "Fattura_2026-001.pdf", "DDT_001-2026.pdf"). Anteprima PDF incorporata dove il browser lo consente.
+- Scorciatoie da tastiera nell'editor righe (nuova riga, duplica, elimina, spostamento tra celle) e uso completo con sola tastiera.
+- Accessibilità: etichette collegate ai campi, ruoli ARIA corretti per tabelle, finestre e menu, gestione del focus nelle finestre di dialogo, contrasto affidato ai token, rispetto di prefers-reduced-motion.
+- Responsive: utilizzabile da desktop e da tablet; su schermi stretti le tabelle larghe scorrono in orizzontale nel proprio contenitore e gli editor passano a una colonna. Nessuna scelta estetica: solo comportamento.
+- Prestazioni: ricerca con debounce, cache delle liste di decodifica, paginazione lato server, nessun ricalcolo inutile dei totali.
+
+5. LOGICA DI CALCOLO LATO CLIENT (solo anteprima; fa fede il server)
+- imponibile riga = arrotonda(quantita × prezzo × (1 − sconto/100), 2 decimali)
+- IVA riga = arrotonda(imponibile riga × aliquota/100, 2 decimali)
+- Riepilogo IVA = somma per aliquota; totale documento = imponibili + IVA + bollo.
+- Usa aritmetica decimale (es. decimal.js o interi in centesimi) per evitare errori di virgola mobile.
+- Esempio di verifica da inserire nei test: riga 1 = 20 pz × 8,50 €, sconto 0%, IVA 22%; riga 2 = 3 h × 60,00 €, sconto 10%, IVA 22%. Atteso: imponibile 332,00; IVA 73,04; totale 405,04.
+
+6. STRUTTURA DEL PROGETTO
+src/ con: api/ (client e tipi), components/ (componenti generici senza stile proprio: Button, Field, Select, Table, Dialog, Toast, Autocomplete, ecc.), features/ (clienti, articoli, fatture, trasporti, impostazioni, dashboard), hooks/, lib/ (formattazione, calcoli), i18n/, styles/ (theme.css con i token, base.css con il solo layout neutro), routes/, tests/. Ogni componente legge l'aspetto solo dai token; nessun colore o font scritto direttamente nei componenti.
+
+7. FUNZIONI OPZIONALI (solo dopo il resto)
+- Importazione clienti da CSV con anteprima e segnalazione degli errori per riga.
+- Duplicazione di un documento come base di uno nuovo.
+- Invio del PDF per email (se il server espone l'endpoint).
+- Stampa diretta dall'anteprima.
+- Modalità offline di sola lettura per gli elenchi già caricati.
+
+8. TEST E CONSEGNA
+- Test unitari per formattazione, calcoli (caso di verifica della sezione 5) e validazioni Zod.
+- Test dei componenti principali: editor righe, ricerca cliente, gestione errori del server.
+- Test end to end: creare un cliente, creare una fattura con due righe e scaricare il PDF; creare un DDT da fattura.
+- Procedi per passi: (1) scaffolding, tema neutro e client API, (2) componenti di base, (3) clienti e articoli, (4) fatture, (5) bolle e DDT, (6) dashboard e impostazioni, (7) test, (8) README con avvio, variabili d'ambiente e guida alla personalizzazione del tema.
+- Alla fine esegui i test, riporta il risultato e indica dove modificare i token per cambiare l'estetica. Se un requisito è ambiguo, scegli la soluzione più semplice, annota l'assunzione nel README e prosegui.
